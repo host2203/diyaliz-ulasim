@@ -5,6 +5,109 @@ koordinatör ve görevli arasında görünür hâle getiren Android prototipi. D
 projesi kapsamında geliştiriliyor; gerçek hasta verisiyle kullanılmayacak,
 yalnızca örnek/demo verilerle çalıştırılacaktır.
 
+> **Depoyu klonlayanlar için:** Kaynak kodu ve dokümantasyon tamdır; ancak
+> güvenlik ve makineye özel dosyalar bilinçli olarak depoya eklenmemiştir.
+> Projeyi derleyip çalıştırmak için aşağıdaki **Hızlı kurulum** bölümünü izleyin.
+
+## Hızlı kurulum (klonlayanlar için)
+
+```powershell
+git clone https://github.com/host2203/diyaliz-ulasim.git
+cd diyaliz-ulasim
+```
+
+### Depoda olmayan dosyalar
+
+| Eksik dosya/klasör | Neden yok | Nasıl oluşturulur |
+| --- | --- | --- |
+| `app/google-services.json` | Firebase proje yapılandırması; kişiye özel | Firebase Console'dan indirilip `app/` altına konur (adım 1) |
+| `local.properties` | Makineye özel Android SDK yolu | Android Studio ilk açılışta oluşturur; gerekirse `sdk.dir=...` yazılır |
+| `*.jks` / `*.keystore` | Release imzalama anahtarı | Yalnızca release build için kendi anahtarınızı üretin; debug build gerektirmez |
+| `firestore-tests/node_modules/` | `npm install` ile kurulur (~250 MB) | `cd firestore-tests` → `npm install` |
+| `firestore-tests/firestore.rules` | Kök `firestore.rules`'un test kopyası | `npm test` öncesi `sync-rules.js` otomatik kopyalar |
+| `app/build/`, `.gradle/`, `.kotlin/` | Derleme çıktısı | Gradle / Android Studio üretir |
+
+### 1. Firebase projesi ve `google-services.json`
+
+1. <https://console.firebase.google.com> → **Add project** (Analytics isteğe bağlı).
+2. Projeye **Android** uygulaması ekle; paket adı: `com.pigasor.diyalizulasim`.
+3. `google-services.json` dosyasını indirip `app/google-services.json` konumuna koy.
+4. **Authentication → Sign-in method**:
+   - **Email/Password** etkinleştir.
+   - **Google** için debug SHA-1/SHA-256 parmak izlerini ekle
+     (`.\gradlew.bat signingReport` çıktısından alınır).
+   - **Phone** için test numarası tanımla; gerçek SMS için kota gerekir.
+5. **Firestore Database → Create database** (production mode).
+
+> `google-services.json` yoksa proje derlenmez. Depoya eklenmez; her klonlayan
+> kendi Firebase projesini kurmalıdır. Proje kimliği farklı olabilir; önemli olan
+> Android paket adının `com.pigasor.diyalizulasim` olmasıdır. Bu dosyayı ve
+> keystore'u asla commit etmeyin.
+
+### 2. Firestore güvenlik kuralları
+
+Kuralların tek doğruluk kaynağı kök dizindeki `firestore.rules` dosyasıdır.
+
+```powershell
+npm install -g firebase-tools
+firebase login
+firebase deploy --only firestore:rules
+```
+
+Alternatif: Firebase Console → **Firestore → Rules** → dosya içeriğini yapıştır → **Publish**.
+
+### 3. Koordinatör ve görevli hesapları
+
+Hasta ve hasta yakını uygulamadan kayıt olabilir. **Koordinatör ve görevli
+hesapları uygulamadan oluşturulamaz**; Firebase Console'dan açılır.
+
+Her hesap için:
+
+1. **Authentication → Users → Add user** ile e-posta/şifre oluştur ve **UID**'yi kopyala.
+2. **Firestore → users/{UID}** belgesini oluştur:
+
+| Alan | Tür | Değer |
+| --- | --- | --- |
+| `name` | string | Ad soyad |
+| `email` | string | Hesabın e-postası |
+| `phone` | string | Telefon (boş olabilir) |
+| `role` | string | `COORDINATOR` veya `DRIVER` |
+| `linkedPatientId` | string | `""` |
+| `personnelId` | string | Görevli için `personnel` belge kimliği; koordinatörde `""` |
+| `visibleStatuses` | array | `[]` |
+| `createdAt` | number | Örn. `1730000000000` (epoch ms) |
+
+Görevli için ayrıca **Firestore → personnel/{personnelId}** belgesi gerekir:
+
+| Alan | Tür | Değer |
+| --- | --- | --- |
+| `name` | string | Görevli adı |
+| `phone` | string | Telefon |
+| `active` | boolean | `true` |
+| `driverUid` | string | Görevlinin Auth UID'si |
+
+Alternatif olarak koordinatör panelindeki **Araç ve personel** diyaloğundan
+personel kaydı açılabilir; **“Görevli hesabının UID'si”** alanına Auth UID'si
+yazılır. `users/{UID}` belgesindeki `personnelId`, bu kaydın kimliğiyle aynı
+olmalıdır.
+
+### 4. Demo verisi ve ilk kullanım
+
+- Uygulama 6 örnek diyaliz merkeziyle gelir; koordinatör kapasite girdiğinde
+  merkezler `centers` koleksiyonuna yazılır.
+- Araçlar ve personel, koordinatör panelindeki **Araç ve personel** diyaloğundan eklenir.
+- Araç/görevli ataması yapılmadan görevli ekranında iş görünmez.
+- Gerçek hasta verisi kullanılmamalıdır; demo hesapları kurgusal olmalıdır.
+
+### 5. Derleme ve çalıştırma
+
+```powershell
+.\gradlew.bat assembleDebug
+```
+
+Android Studio'da **Run** da kullanılabilir. Ayrıntılar: [Çalıştırma](#çalıştırma).
+Güvenlik ve KVKK notları: `GUVENLIK.md`; pilot önerisi: `PILOT.md`.
+
 ## Problem
 
 Diyaliz seansına ulaşım çoğu zaman telefon ve not kâğıtlarıyla koordine ediliyor.
@@ -98,47 +201,25 @@ güncelleyen kullanıcıyla kaydedilir.
 - Ücretsiz OSRM public API (gerçek rota süresi; API anahtarı/ücret yok)
 - Yerel cihaz bildirimleri + uygulama içi bildirim merkezi (FCM yok)
 
-## Firebase kurulumu (bir kez)
+## Testler
 
-1. <https://console.firebase.google.com> → **Add project** → proje adı
-   `DiyalizUlasim` → Google Analytics'i kapatabilirsin.
-2. Proje ana ekranında **Android** uygulaması ekle.
-3. Paket adı: `com.pigasor.diyalizulasim`
-4. `google-services.json` dosyasını indir ve şuraya koy:
-
-   `C:\Users\Pigasor\Desktop\Mobilprogramlama_diyaliz\app\google-services.json`
-
-5. **Authentication → Sign-in method → Email/Password** etkinleştir.
-6. **Firestore Database → Create database → test mode** seç (prototip için;
-   yayına almadan önce kuralları sıkılaştır).
-
-## Firestore güvenlik kuralları
-
-Kurallar `firestore.rules` dosyasında; 77 senaryoluk emülatör testi
-`firestore-tests/` klasöründe.
-
-Emülatör testi (Java 21 PATH'te olmalı):
+Kural emülatörü (Firebase Emulator; canlı projeye dokunmaz):
 
 ```powershell
 cd firestore-tests
 npm install
 npm test
+```
 
-# Kotlin birim testleri (proje kökünde)
+`npm test` öncesi `sync-rules.js`, kök `firestore.rules` dosyasını test
+klasörüne kopyalar. Kotlin birim testleri proje kökünde:
+
+```powershell
 .\gradlew.bat :app:testDebugUnitTest
 ```
 
-Canlı projeye yükleme:
-
-1. `npm install -g firebase-tools` (bir kez)
-2. `firebase login`
-3. Proje kökünde: `firebase deploy --only firestore:rules`
-
-Alternatif: Firebase Console → Firestore → Rules → `firestore.rules`
-içeriğini yapıştır → **Publish**.
-
-> Yükleme sonrası test modu kapanır. Uygulama yalnızca kurallara uyan
-> istekleri yapabilir; önce emülatör testlerinin geçtiği doğrulanmalıdır.
+> Kural değişikliğinde önce emülatör testleri çalıştırılmalı, ardından
+> `firebase deploy --only firestore:rules` ile canlıya yüklenmelidir.
 
 ## Çalıştırma
 
