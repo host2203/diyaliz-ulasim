@@ -1,0 +1,23 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+app/build/
+.kotlin/
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# Firebase ve gizli yapılandırma dosyaları depoya eklenmez
+app/google-services.json
+secrets.properties
+*.jks
+*.keystore
+
+# Firestore kural testleri
+firestore-tests/node_modules/
+firestore-tests/firestore.rules
+firestore-tests/*.log

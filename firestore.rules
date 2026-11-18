@@ -1,0 +1,627 @@
+rules_version = '2';
+
+// Diyaliz Ulaşım için Firestore güvenlik kuralları.
+// Amaç: rol bazlı erişim, veri minimizasyonu ve denetim izi.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Giriş yapmış mı?
+    function girisYapmis() {
+      return request.auth != null;
+    }
+
+    // Kullanıcı profili var mı?
+    function kullaniciVarMi() {
+      return girisYapmis() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    // Giriş yapan kullanıcının profili.
+    function kullaniciBelgesi() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    // Kullanıcı koordinatör mü?
+    function koordinatorMu() {
+      return kullaniciVarMi() && kullaniciBelgesi().data.role == 'COORDINATOR';
+    }
+
+    // Kullanıcı görevli (şoför) mı?
+    function gorevliMi() {
+      return kullaniciVarMi() && kullaniciBelgesi().data.role == 'DRIVER';
+    }
+
+    // Kullanıcı hasta mı?
+    function hastaMi() {
+      return kullaniciVarMi() && kullaniciBelgesi().data.role == 'PATIENT';
+    }
+
+    // Görevlinin bağlı olduğu personel kaydının kimliği.
+    function gorevliPersonelId() {
+      return kullaniciBelgesi().data.personnelId;
+    }
+
+    // Durum zincirindeki bir sonraki adım; geçersiz geçişte 'YOK' döner.
+    function sonrakiDurum(durum) {
+      return durum == 'PLANNED' ? 'ON_THE_WAY'
+        : durum == 'ON_THE_WAY' ? 'PICKED_UP'
+        : durum == 'PICKED_UP' ? 'AT_CENTER'
+        : durum == 'AT_CENTER' ? 'DROPPED_HOME'
+        : 'YOK';
+    }
+
+    // Kullanıcı profilleri: kişi kendi profilini okur/yazar, koordinatör okur.
+    // Rol değişikliği kullanıcı tarafından yapılamaz; koordinatör Console'dan oluşturulur.
+    match /users/{uid} {
+      allow read: if girisYapmis() && (request.auth.uid == uid || koordinatorMu());
+      allow create: if girisYapmis() && request.auth.uid == uid
+        && request.resource.data.role in ['PATIENT', 'RELATIVE'];
+      allow update: if girisYapmis() && (
+        (request.auth.uid == uid
+          && request.resource.data.role == resource.data.role
+          && (
+            !('linkedPatientId' in request.resource.data)
+            || request.resource.data.linkedPatientId == resource.data.linkedPatientId
+            || (
+              resource.data.role == 'RELATIVE'
+              && request.resource.data.linkedPatientId is string
+              && request.resource.data.linkedPatientId != ''
+              && exists(/databases/$(database)/documents/relativeLinks/$(uid))
+              && get(/databases/$(database)/documents/relativeLinks/$(uid)).data.patientId
+                == request.resource.data.linkedPatientId
+            )
+          )
+        ) ||
+        koordinatorMu()
+      );
+      allow delete: if false;
+    }
+
+    // Hasta yakını davetleri: hasta kendi kodunu üretir, yakın kodu tüketir.
+    match /relativeInvites/{code} {
+      allow get: if girisYapmis();
+      allow list: if false;
+      allow create: if girisYapmis()
+        && kullaniciBelgesi().data.role == 'PATIENT'
+        && request.resource.data.patientId == request.auth.uid
+        && request.resource.data.patientName is string
+        && request.resource.data.usedBy == ''
+        && request.resource.data.active == true
+        && request.resource.data.expiresAt > request.resource.data.createdAt
+        && code.size() == 6;
+      allow update: if girisYapmis()
+        && kullaniciBelgesi().data.role == 'RELATIVE'
+        && resource.data.usedBy == ''
+        && resource.data.active == true
+        && request.resource.data.usedBy == request.auth.uid
+        && request.resource.data.usedAt > 0
+        && request.resource.data.active == false
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'usedBy', 'usedAt', 'active'
+           ]);
+      allow delete: if false;
+    }
+
+    // Değiştirilemez yakın-hasta bağlantısı; yalnızca geçerli davetle oluşturulur.
+    match /relativeLinks/{relativeUid} {
+      allow get: if girisYapmis() && request.auth.uid == relativeUid;
+      allow list: if false;
+      allow create: if girisYapmis()
+        && kullaniciBelgesi().data.role == 'RELATIVE'
+        && request.auth.uid == relativeUid
+        && request.resource.data.patientId is string
+        && request.resource.data.patientName is string
+        && request.resource.data.inviteCode is string
+        && exists(/databases/$(database)/documents/relativeInvites/$(request.resource.data.inviteCode))
+        && get(/databases/$(database)/documents/relativeInvites/$(request.resource.data.inviteCode)).data.patientId
+          == request.resource.data.patientId
+        && (
+          get(/databases/$(database)/documents/relativeInvites/$(request.resource.data.inviteCode)).data.active == true
+          || get(/databases/$(database)/documents/relativeInvites/$(request.resource.data.inviteCode)).data.usedBy
+            == request.auth.uid
+        )
+        && request.resource.data.keys().hasOnly([
+             'patientId', 'patientName', 'inviteCode', 'createdAt'
+           ]);
+      allow update, delete: if false;
+    }
+
+    // Araçlar: her giriş yapmış kullanıcı okuyabilir; yalnızca koordinatör yazar.
+    match /vehicles/{vehicleId} {
+      allow read: if girisYapmis();
+      allow create, update: if koordinatorMu();
+      allow delete: if false;
+    }
+
+    // Diyaliz merkezleri: giriş yapan herkes okuyabilir; koordinatör yazabilir.
+    match /centers/{centerId} {
+      allow read: if girisYapmis();
+      allow create, update: if koordinatorMu();
+      allow delete: if false;
+    }
+
+    // Seans doluluk sayaçları: yalnızca toplam sayı tutulur, kişisel veri yoktur.
+    // Hasta rezervasyonda +1, iptalde -1 yapar; sayaç belgesi yoksa 1 ile oluşturur.
+    // Amaç eşzamanlı iki talebin son kontenjanı aşmasını önlemek; iş kuralı istemcide.
+    match /slotAvailability/{slotId} {
+      allow read: if girisYapmis();
+
+      allow create: if girisYapmis()
+        && request.resource.data.booked is int
+        && request.resource.data.booked == 1
+        && request.resource.data.booked <= 50
+        && request.resource.data.keys().hasOnly([
+             'centerName', 'date', 'session', 'booked', 'updatedAt'
+           ]);
+
+      allow update: if girisYapmis()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'booked', 'updatedAt'
+           ])
+        && request.resource.data.booked is int
+        && request.resource.data.booked >= 0
+        && request.resource.data.booked <= 50
+        && ((request.resource.data.booked == resource.data.booked + 1)
+            || (request.resource.data.booked == resource.data.booked - 1));
+
+      allow delete: if false;
+    }
+
+    // Görevli personel kayıtları: koordinatör yönetir; görevli yalnızca kendi kaydını okur.
+    match /personnel/{personnelId} {
+      allow read: if koordinatorMu() ||
+        (gorevliMi() && gorevliPersonelId() == personnelId);
+      allow create, update: if koordinatorMu();
+      allow delete: if false;
+    }
+
+    // Ulaşım talepleri ve durum geçmişi.
+    match /transportRequests/{requestId} {
+
+      // Alt koleksiyon kurallarında üst talebi okumak için kullanılır.
+      function talepBelgesi() {
+        return get(/databases/$(database)/documents/transportRequests/$(requestId));
+      }
+
+      // Talebin sahibi hasta mı? (Liste sorgularında resource doğrudan kullanılır.)
+      function talepSahibiMi() {
+        return girisYapmis() && resource.data.patientId == request.auth.uid;
+      }
+
+      // Talep bu görevliye mi atanmış?
+      function talebeAtanmisGorevliMi() {
+        return gorevliMi() && resource.data.personnelId == gorevliPersonelId();
+      }
+
+      // Bağlı hasta yakını mı?
+      function talepYakiniMi() {
+        return kullaniciVarMi()
+          && kullaniciBelgesi().data.role == 'RELATIVE'
+          && kullaniciBelgesi().data.linkedPatientId == resource.data.patientId;
+      }
+
+      // Hasta yalnızca güvenli alanları düzenleyebilir; durum/atama değiştiremez.
+      function hastaDuzenleyebilirMi() {
+        return talepSahibiMi()
+          && resource.data.status in ['REQUESTED', 'PLANNED']
+          && request.resource.data.patientId == resource.data.patientId
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.status == resource.data.status
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+               // Tarih/saat/merkez değişikliği kapasite sayacını atlatacağı için yasak;
+               // hasta değişiklik isterse talebi iptal edip yeni talep oluşturmalıdır.
+               'pickupAddress',
+               'pickupLat', 'pickupLng', 'roundTrip', 'companionRequired',
+               'companionName', 'companionPhone', 'companionRelation',
+               'wheelchairRequired', 'note', 'updatedAt'
+             ]);
+      }
+
+      // Hasta talebini iptal edebilir; iptal gerekçesini kendisi yazar.
+      function hastaIptalEdebilirMi() {
+        return talepSahibiMi()
+          && resource.data.status in ['REQUESTED', 'PLANNED']
+          && request.resource.data.status == 'CANCELLED'
+          && request.resource.data.cancelledBy == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+               'status', 'cancelledBy', 'cancelReason', 'cancelledAt', 'updatedAt'
+             ]);
+      }
+
+      // Hasta yalnızca yolculuk başlamadan hazırlık bildirimini güncelleyebilir.
+      // Gecikme onayı, erteleme bilgisi ve görevli mesajı yalnızca koordinatöre aittir.
+      function hastaHazirlikGuncelleyebilirMi() {
+        return talepSahibiMi()
+          && resource.data.status in ['REQUESTED', 'PLANNED', 'ON_THE_WAY']
+          && request.resource.data.delayOverride == false
+          && (!('delayRescheduled' in request.resource.data)
+              || request.resource.data.delayRescheduled == false)
+          && (!('delayDriverMessage' in request.resource.data)
+              || request.resource.data.delayDriverMessage == '')
+          && request.resource.data.delayPreviousSessionDate == ''
+          && request.resource.data.delayPreviousSessionTime == ''
+          && request.resource.data.delayPreviousPickupTime == ''
+          && request.resource.data.readiness in ['READY', 'DELAYED']
+          && (request.resource.data.readiness == 'READY'
+              ? request.resource.data.delayMinutes == 0
+              : (request.resource.data.delayMinutes >= 5
+                 && request.resource.data.delayMinutes <= 180))
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+               'readiness', 'delayMinutes', 'readinessUpdatedAt', 'updatedAt',
+               'delayOverride', 'delayOverrideReason', 'delayOverrideBy',
+               'delayOverrideByName', 'delayOverrideAt',
+               'delayRescheduled', 'delayPreviousSessionDate',
+               'delayPreviousSessionTime', 'delayPreviousPickupTime',
+               'delayDriverMessage'
+             ]);
+      }
+
+      // Koordinatör atama ve durum alanlarını güncelleyebilir; hasta kimliğini değiştiremez.
+      function koordinatorGuncelleyebilirMi() {
+        return koordinatorMu()
+          && request.resource.data.patientId == resource.data.patientId
+          && request.resource.data.createdBy == resource.data.createdBy;
+      }
+
+      // Görevlinin değiştiremeyeceği kimlik/atama alanlarının korunması.
+      function gorevliTemelAlanlarAyniMi() {
+        return talebeAtanmisGorevliMi()
+          && request.resource.data.patientId == resource.data.patientId
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.personnelId == resource.data.personnelId
+          && request.resource.data.vehicleId == resource.data.vehicleId;
+      }
+
+      // Görevli yalnızca kendisine atanmış talebin durumunu bir sonraki adıma taşır.
+      function gorevliDurumGuncelleyebilirMi() {
+        return gorevliTemelAlanlarAyniMi()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+          && request.resource.data.status == sonrakiDurum(resource.data.status);
+      }
+
+      // Bacak değişiminde eski gecikme/ETA alanlarının temizlendiğini doğrular.
+      // Dönüş başlarken yalnızca ETA alanlarının temizlenmesi gerekir.
+      function gorevliEtaAlanlariniTemizlediMi() {
+        return request.resource.data.etaBaseMinutes == 0
+          && request.resource.data.etaMinutes == 0
+          && request.resource.data.etaTarget == 'NONE'
+          && request.resource.data.etaUpdatedAt == 0
+          && request.resource.data.etaSource == '';
+      }
+
+      function gorevliBacakAlanlariniTemizlediMi() {
+        return request.resource.data.driverDelayMinutes == 0
+          && request.resource.data.driverDelayStatus == 'NONE'
+          && request.resource.data.driverDelayTarget == 'NONE'
+          && gorevliEtaAlanlariniTemizlediMi();
+      }
+
+      // Hasta alımı ve merkeze varışta bacak temizliği + dönüş planı alanları.
+      function gorevliBacakDurumGuncelleyebilirMi() {
+        return gorevliTemelAlanlarAyniMi()
+          && request.resource.data.status == sonrakiDurum(resource.data.status)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+               'status', 'updatedAt', 'centerArrivedAt', 'returnPlannedAt',
+               'returnPlanStatus', 'driverDelayMinutes', 'driverDelayStatus',
+               'driverDelayTarget', 'driverDelayUpdatedAt', 'etaBaseMinutes',
+               'etaMinutes', 'etaTarget', 'etaUpdatedAt', 'etaSource'
+             ])
+          && gorevliBacakAlanlariniTemizlediMi()
+          && ((resource.data.status == 'ON_THE_WAY'
+               && request.resource.data.status == 'PICKED_UP')
+              || (resource.data.status == 'PICKED_UP'
+                  && request.resource.data.status == 'AT_CENTER'
+                  && request.resource.data.centerArrivedAt > 0
+                  && ((resource.data.roundTrip == true
+                       && request.resource.data.returnPlanStatus == 'PENDING'
+                       && request.resource.data.returnPlannedAt > 0)
+                      || (resource.data.roundTrip == false
+                          && request.resource.data.returnPlanStatus == 'NONE'))));
+      }
+
+      // Görevli kendi gecikmesini süre ve gizli gerekçeyle bildirir; onay gerekmez.
+      function gorevliGecikmeGuncelleyebilirMi() {
+        return gorevliTemelAlanlarAyniMi()
+          && resource.data.status in ['PLANNED', 'ON_THE_WAY', 'PICKED_UP', 'AT_CENTER']
+          && request.resource.data.driverDelayMinutes >= 5
+          && request.resource.data.driverDelayMinutes <= 180
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+               'driverDelayMinutes', 'driverDelayStatus', 'driverDelayTarget',
+               'driverDelayUpdatedAt', 'driverDelayApprovedAt',
+               'driverDelayApprovedBy', 'driverDelayApprovedByName',
+               'etaMinutes', 'etaTarget', 'etaUpdatedAt', 'updatedAt'
+             ])
+          && request.resource.data.driverDelayStatus == 'INFO'
+          && ((resource.data.status in ['PLANNED', 'ON_THE_WAY']
+               && request.resource.data.driverDelayTarget == 'HOME')
+              || (resource.data.status == 'PICKED_UP'
+                  && request.resource.data.driverDelayTarget == 'CENTER')
+              || (resource.data.status == 'AT_CENTER'
+                  && request.resource.data.driverDelayTarget == 'HOME'));
+      }
+
+      // Görevli, OSRM'den gelen gerçek ETA alanlarını günceller.
+      function gorevliEtaGuncelleyebilirMi() {
+        return gorevliTemelAlanlarAyniMi()
+          && resource.data.status in ['PLANNED', 'ON_THE_WAY', 'PICKED_UP', 'AT_CENTER']
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+               'etaBaseMinutes', 'etaMinutes', 'etaTarget', 'etaUpdatedAt',
+               'etaSource', 'updatedAt'
+             ])
+          && request.resource.data.etaBaseMinutes > 0
+          && request.resource.data.etaMinutes >= request.resource.data.etaBaseMinutes
+          && request.resource.data.etaSource == 'OSRM'
+          && ((resource.data.status in ['PLANNED', 'ON_THE_WAY']
+               && request.resource.data.etaTarget == 'HOME')
+              || (resource.data.status == 'PICKED_UP'
+                  && request.resource.data.etaTarget == 'CENTER')
+              || (resource.data.status == 'AT_CENTER'
+                  && request.resource.data.returnStartedAt > 0
+                  && request.resource.data.etaTarget == 'HOME'));
+      }
+
+      // Merkeze ulaşıldıktan sonra görevli, onaylı dönüş planını başlatır.
+      function gorevliDonusuBaslatabilirMi() {
+        return gorevliTemelAlanlarAyniMi()
+          && resource.data.status == 'AT_CENTER'
+          && resource.data.returnPlanStatus == 'APPROVED'
+          && (!('returnStartedAt' in resource.data) || resource.data.returnStartedAt == 0)
+          && request.resource.data.returnStartedAt > 0
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+               'returnStartedAt', 'updatedAt', 'etaBaseMinutes', 'etaMinutes',
+               'etaTarget', 'etaUpdatedAt', 'etaSource'
+             ])
+          && gorevliEtaAlanlariniTemizlediMi();
+      }
+
+      // Tüm görevli güncelleme yollarını tek fonksiyonda toplar.
+      function gorevliGuncelleyebilirMi() {
+        return gorevliDurumGuncelleyebilirMi()
+          || gorevliBacakDurumGuncelleyebilirMi()
+          || gorevliGecikmeGuncelleyebilirMi()
+          || gorevliEtaGuncelleyebilirMi()
+          || gorevliDonusuBaslatabilirMi();
+      }
+
+      // Hasta, koordinatör ve atanmış görevli talebi okuyabilir.
+      allow read: if girisYapmis() &&
+        (talepSahibiMi() || koordinatorMu() || talepYakiniMi() || talebeAtanmisGorevliMi());
+
+      // Yeni talep yalnızca hasta tarafından ve temiz bir başlangıç durumuyla oluşturulur.
+      allow create: if hastaMi()
+        && request.resource.data.patientId == request.auth.uid
+        && request.resource.data.status == 'REQUESTED'
+        && request.resource.data.readiness == 'NOT_SET'
+        && request.resource.data.vehicleId == ''
+        && request.resource.data.personnel == ''
+        && (!('personnelId' in request.resource.data) || request.resource.data.personnelId == '')
+        && (!('personnelPhone' in request.resource.data) || request.resource.data.personnelPhone == '')
+        && request.resource.data.priorityVerified == false
+        && (!('priorityCategory' in request.resource.data)
+            || request.resource.data.priorityCategory in [
+                 'NONE', 'AGE_65_PLUS', 'DISABILITY', 'MARTYR_VETERAN', 'SERIOUS_HEALTH'
+               ])
+        && (!('driverDelayStatus' in request.resource.data)
+            || request.resource.data.driverDelayStatus == 'NONE')
+        && (!('driverDelayMinutes' in request.resource.data)
+            || request.resource.data.driverDelayMinutes == 0)
+        && (!('driverDelayTarget' in request.resource.data)
+            || request.resource.data.driverDelayTarget == 'NONE')
+        && (!('etaMinutes' in request.resource.data)
+            || request.resource.data.etaMinutes == 0)
+        && (!('etaBaseMinutes' in request.resource.data)
+            || request.resource.data.etaBaseMinutes == 0)
+        && (!('sessionDurationMinutes' in request.resource.data)
+            || (request.resource.data.sessionDurationMinutes >= 60
+                && request.resource.data.sessionDurationMinutes <= 720))
+        && (!('returnBufferMinutes' in request.resource.data)
+            || (request.resource.data.returnBufferMinutes >= 0
+                && request.resource.data.returnBufferMinutes <= 60))
+        && (!('centerArrivedAt' in request.resource.data)
+            || request.resource.data.centerArrivedAt == 0)
+        && (!('returnPlannedAt' in request.resource.data)
+            || request.resource.data.returnPlannedAt == 0)
+        && (!('returnPlanStatus' in request.resource.data)
+            || request.resource.data.returnPlanStatus == 'NONE')
+        && (!('returnStartedAt' in request.resource.data)
+            || request.resource.data.returnStartedAt == 0);
+
+      allow update: if hastaDuzenleyebilirMi()
+        || hastaIptalEdebilirMi()
+        || hastaHazirlikGuncelleyebilirMi()
+        || koordinatorGuncelleyebilirMi()
+        || gorevliGuncelleyebilirMi();
+
+      // Kayıtlar silinmez; iptal durumu kullanılır.
+      allow delete: if false;
+
+      // Durum geçmişi: yalnızca eklenir, sonradan değiştirilemez.
+      match /history/{eventId} {
+
+        // Üst talebin sahibi hasta mı? (Alt koleksiyonda üst belge okunur.)
+        function gecmisSahibiMi() {
+          return girisYapmis() && talepBelgesi().data.patientId == request.auth.uid;
+        }
+
+        // Üst talep bu görevliye mi atanmış?
+        function gecmisGorevliMi() {
+          return gorevliMi() &&
+            talepBelgesi().data.personnelId == gorevliPersonelId();
+        }
+
+        // Bağlı hasta yakını mı?
+        function gecmisYakiniMi() {
+          return kullaniciVarMi()
+            && kullaniciBelgesi().data.role == 'RELATIVE'
+            && kullaniciBelgesi().data.linkedPatientId == talepBelgesi().data.patientId;
+        }
+
+        allow read: if girisYapmis() &&
+          (gecmisSahibiMi() || koordinatorMu() || gecmisYakiniMi() || gecmisGorevliMi());
+
+        // Koordinatör atama/hazırlık olaylarını; hasta yalnızca hazırlık bildirimini;
+        // görevli yalnızca kendi durum adımını yazabilir.
+        allow create: if koordinatorMu()
+          || (gecmisSahibiMi() && request.resource.data.type == 'READINESS')
+          || (gecmisSahibiMi()
+              && request.resource.data.type == 'CANCELLATION'
+              && request.resource.data.value == 'CANCELLED')
+          || (gecmisGorevliMi()
+              && request.resource.data.type in ['STATUS', 'DRIVER_DELAY']
+              && request.resource.data.updatedBy == request.auth.uid);
+
+        allow update, delete: if false;
+      }
+    }
+
+    // Gecikme gerekçeleri: hasta kendi raporunu yazar/okur, koordinatör tümünü okur.
+    // Talep belgesi görevli tarafından okunabildiği için gerekçe ayrı koleksiyonda tutulur;
+    // görevli ve hasta yakını bu koleksiyona erişemez.
+    match /delayReports/{requestId} {
+
+      // Raporun bağlı olduğu talebi okur.
+      function raporTalepBelgesi() {
+        return get(/databases/$(database)/documents/transportRequests/$(requestId));
+      }
+
+      // Yeni raporun sahibi, giriş yapan hasta mı?
+      function raporSahibiMi() {
+        return hastaMi() && request.auth.uid == request.resource.data.patientId;
+      }
+
+      // Gerekçeyi yalnızca koordinatör ve raporun sahibi hasta okuyabilir.
+      allow read: if koordinatorMu()
+        || (hastaMi() && resource.data.patientId == request.auth.uid);
+
+      // Hasta yalnızca kendi talebi için, izin verilen aşamada rapor oluşturur.
+      allow create: if raporSahibiMi()
+        && request.resource.data.requestId == requestId
+        && raporTalepBelgesi().data.patientId == request.auth.uid
+        && raporTalepBelgesi().data.status in ['REQUESTED', 'PLANNED', 'ON_THE_WAY']
+        && request.resource.data.minutes >= 5
+        && request.resource.data.minutes <= 180
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() >= 3
+        && request.resource.data.reason.size() <= 300
+        && request.resource.data.driverMessage is string
+        && request.resource.data.driverMessage.size() <= 300
+        && request.resource.data.keys().hasOnly([
+             'requestId', 'patientId', 'minutes', 'reason', 'driverMessage',
+             'createdAt', 'updatedAt'
+           ]);
+
+      // Hasta yeni bir gecikme bildirimi yaptığında raporu güncelleyebilir.
+      allow update: if raporSahibiMi()
+        && request.resource.data.requestId == requestId
+        && raporTalepBelgesi().data.patientId == request.auth.uid
+        && raporTalepBelgesi().data.status in ['REQUESTED', 'PLANNED', 'ON_THE_WAY']
+        && request.resource.data.minutes >= 5
+        && request.resource.data.minutes <= 180
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() >= 3
+        && request.resource.data.reason.size() <= 300
+        && request.resource.data.driverMessage is string
+        && request.resource.data.driverMessage.size() <= 300
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'requestId', 'patientId', 'minutes', 'reason', 'driverMessage',
+             'createdAt', 'updatedAt'
+           ]);
+
+      allow delete: if false;
+    }
+
+    // Görevli/araç gecikme gerekçeleri: yalnızca koordinatör ve atanmış görevli erişir.
+    // Hasta ve hasta yakını bu gizli gerekçeyi okuyamaz.
+    match /driverDelayReports/{requestId} {
+
+      function raporTalepBelgesi() {
+        return get(/databases/$(database)/documents/transportRequests/$(requestId));
+      }
+
+      function raporGorevlisiMi() {
+        return gorevliMi()
+          && raporTalepBelgesi().data.personnelId == gorevliPersonelId()
+          && request.auth.uid == request.resource.data.driverUid
+          && request.resource.data.personnelId == gorevliPersonelId();
+      }
+
+      allow read: if koordinatorMu()
+        || (gorevliMi()
+            && raporTalepBelgesi().data.personnelId == gorevliPersonelId());
+
+      allow create: if raporGorevlisiMi()
+        && raporTalepBelgesi().data.status in [
+             'PLANNED', 'ON_THE_WAY', 'PICKED_UP', 'AT_CENTER'
+           ]
+        && request.resource.data.requestId == requestId
+        && request.resource.data.minutes >= 5
+        && request.resource.data.minutes <= 180
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() >= 3
+        && request.resource.data.reason.size() <= 300
+        && request.resource.data.status == 'INFO'
+        && request.resource.data.keys().hasOnly([
+             'requestId', 'driverUid', 'personnelId', 'minutes', 'reason',
+             'status', 'createdAt', 'updatedAt'
+           ]);
+
+      allow update: if raporGorevlisiMi()
+          && raporTalepBelgesi().data.status in [
+               'PLANNED', 'ON_THE_WAY', 'PICKED_UP', 'AT_CENTER'
+             ]
+          && request.resource.data.requestId == requestId
+          && request.resource.data.minutes >= 5
+          && request.resource.data.minutes <= 180
+          && request.resource.data.reason is string
+          && request.resource.data.reason.size() >= 3
+          && request.resource.data.reason.size() <= 300
+          && request.resource.data.status == 'INFO'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+               'requestId', 'driverUid', 'personnelId', 'minutes', 'reason',
+               'status', 'createdAt', 'updatedAt'
+             ]);
+
+      allow delete: if false;
+    }
+
+    // Uygulama içi bildirimler: ilgili talep tarafları oluşturabilir, hedef kullanıcı okur.
+    match /notifications/{notificationId} {
+
+      // Bildirim bu kullanıcının kutusuna mı ait?
+      function hedefBanaMi() {
+        return girisYapmis() && (
+          (resource.data.audience == 'COORDINATOR' && koordinatorMu()) ||
+          (resource.data.audience == 'PATIENT' && resource.data.userId == request.auth.uid) ||
+          (resource.data.audience == 'DRIVER' && gorevliMi()
+            && resource.data.personnelId == gorevliPersonelId())
+        );
+      }
+
+      // Bildirimin bağlı olduğu talebi okur.
+      function bildirimTalepBelgesi() {
+        return get(/databases/$(database)/documents/transportRequests/$(request.resource.data.requestId));
+      }
+
+      // Yalnızca talebin tarafı (hasta, koordinatör veya atanmış görevli) bildirim üretebilir.
+      function bildirimOlusturabilirMi() {
+        return girisYapmis()
+          && request.resource.data.createdBy == request.auth.uid
+          && exists(/databases/$(database)/documents/transportRequests/$(request.resource.data.requestId))
+          && (bildirimTalepBelgesi().data.patientId == request.auth.uid
+              || koordinatorMu()
+              || (gorevliMi()
+                  && bildirimTalepBelgesi().data.personnelId == gorevliPersonelId()));
+      }
+
+      allow read: if hedefBanaMi();
+
+      allow create: if bildirimOlusturabilirMi();
+
+      // Yalnızca okundu bilgisi değiştirilebilir.
+      allow update: if hedefBanaMi()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'readAt']);
+
+      allow delete: if false;
+    }
+  }
+}
