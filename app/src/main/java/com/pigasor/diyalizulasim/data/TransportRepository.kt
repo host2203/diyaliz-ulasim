@@ -63,7 +63,7 @@ class TransportRepository(
             }
             if (slotId == null) {
                 // Kapasite tanımlı değilse mevcut davranış korunur; doluluk kontrolü yapılmaz.
-                talepRef.set(talepBelgesiVerisi(talep, uid, simdi, kapasite)).await()
+                talepRef.set(talepBelgesiVerisi(talep, uid, simdi, kapasite, "")).await()
             } else {
                 val seciliSeans = requireNotNull(seans)
                 val slotRef = firestore.collection("slotAvailability").document(slotId)
@@ -80,7 +80,11 @@ class TransportRepository(
                     if (slot.exists()) {
                         islem.update(
                             slotRef,
-                            mapOf("booked" to dolu + 1, "updatedAt" to simdi)
+                            mapOf(
+                                "booked" to dolu + 1,
+                                "updatedAt" to simdi,
+                                "lastRequestId" to talepRef.id
+                            )
                         )
                     } else {
                         islem.set(
@@ -90,11 +94,12 @@ class TransportRepository(
                                 "date" to talep.sessionDate,
                                 "session" to seciliSeans.name,
                                 "booked" to 1,
-                                "updatedAt" to simdi
+                                "updatedAt" to simdi,
+                                "lastRequestId" to talepRef.id
                             )
                         )
                     }
-                    islem.set(talepRef, talepBelgesiVerisi(talep, uid, simdi, kapasite))
+                    islem.set(talepRef, talepBelgesiVerisi(talep, uid, simdi, kapasite, slotId))
                     Unit
                 }.await()
             }
@@ -125,9 +130,11 @@ class TransportRepository(
         talep: TransportRequest,
         uid: String,
         simdi: Long,
-        kapasite: Int
+        kapasite: Int,
+        slotId: String = ""
     ): Map<String, Any> {
         return mapOf(
+            "slotId" to slotId,
             "patientId" to uid,
             "patientName" to talep.patientName,
             "sessionDate" to talep.sessionDate,
@@ -1151,7 +1158,11 @@ class TransportRepository(
                         if (dolu > 0) {
                             islem.update(
                                 slotRef,
-                                mapOf("booked" to dolu - 1, "updatedAt" to simdi)
+                                mapOf(
+                                    "booked" to dolu - 1,
+                                    "updatedAt" to simdi,
+                                    "lastRequestId" to talepRef.id
+                                )
                             )
                         }
                     }
@@ -1295,6 +1306,12 @@ class TransportRepository(
                 )
                 guncellemeler["sessionDate"] = yeniSeans.first
                 guncellemeler["sessionTime"] = yeniSeans.second
+                // Talep belgesi, hangi doluluk sayacına bağlı olduğunu da taşır (kurallar bunu doğrular).
+                val yeniSlotKimligi =
+                    Kapasite.slotBelgesiId(merkezAdi, yeniSeans.first, yeniSeans.second)
+                if (merkezKapasitesi > 0 && yeniSlotKimligi != null) {
+                    guncellemeler["slotId"] = yeniSlotKimligi
+                }
                 if (yeniAlinma.isNotBlank()) {
                     guncellemeler["plannedPickupTime"] = yeniAlinma
                 }
@@ -1319,7 +1336,11 @@ class TransportRepository(
                         if (eskiDolu > 0) {
                             islem.update(
                                 eskiSlotRef,
-                                mapOf("booked" to eskiDolu - 1, "updatedAt" to simdi)
+                                mapOf(
+                                    "booked" to eskiDolu - 1,
+                                    "updatedAt" to simdi,
+                                    "lastRequestId" to talepRef.id
+                                )
                             )
                         }
                     }
@@ -1337,7 +1358,11 @@ class TransportRepository(
                     if (yeniSlot?.exists() == true) {
                         islem.update(
                             yeniSlotRef,
-                            mapOf("booked" to yeniDolu + 1, "updatedAt" to simdi)
+                            mapOf(
+                                "booked" to yeniDolu + 1,
+                                "updatedAt" to simdi,
+                                "lastRequestId" to talepRef.id
+                            )
                         )
                     } else {
                         islem.set(
@@ -1347,7 +1372,8 @@ class TransportRepository(
                                 "date" to yeniSeans.first,
                                 "session" to Kapasite.seansDilimi(yeniSeans.second)?.name.orEmpty(),
                                 "booked" to 1,
-                                "updatedAt" to simdi
+                                "updatedAt" to simdi,
+                                "lastRequestId" to talepRef.id
                             )
                         )
                     }

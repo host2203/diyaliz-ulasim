@@ -132,8 +132,11 @@ Ek kurallar:
   üretilmiş 12 karakterlik (≈2^60 ihtimal), tek kullanımlık ve 7 günlük koddur.
   Kodu yalnızca hasta ve yakın rolündeki hesaplar bilinerek okuyabilir; liste
   sorgusu kapalıdır.
-- `slotAvailability` sayaçları yalnızca hasta ve koordinatör rolleri tarafından
-  ±1 adımla değiştirilebilir; profili olmayan, görevli veya yakın hesaplar yazamaz.
+- `slotAvailability` sayaçları tek başına oynatılamaz: her ±1 değişiklik aynı işlemdeki
+  gerçek bir talep değişikliğine (oluşturma, iptal, koordinatör taşıması) bağlıdır ve
+  talep belgesindeki `slotId` alanıyla doğrulanır. Kapasite üst sınırı istemcide
+  denetlenir; değiştirilmiş bir istemci sınırı aşan talep açabilir ama başkasının
+  sayacını bozamaz.
 - `relativeLinks/{relativeUid}` yalnızca geçerli/aktif davetle ve ilgili yakın
   hesabı tarafından oluşturulur; sonradan değiştirilemez/silinemez.
 - Yakının `linkedPatientId` alanı yalnızca `relativeLinks` belgesindeki hastayla
