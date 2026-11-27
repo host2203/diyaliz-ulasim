@@ -92,6 +92,7 @@ const TEMEL_TALEP = {
   createdBy: 'P',
   createdAt: 1,
   updatedAt: 1,
+  slotId: '',
 };
 
 function talep(id, ek) {
@@ -681,6 +682,8 @@ test('Koordinitor kullanici profilini okur', async () => {
 });
 
 // --- Seans doluluk sayaçları ---
+// Sayaç yalnızca aynı işlemdeki gerçek bir talep değişikliğiyle (oluşturma, iptal, taşıma)
+// ±1 oynatılabilir; talep belgesindeki slotId alanı hangi sayaca bağlı olduğunu gösterir.
 function slot(ek) {
   return {
     centerName: 'Test Merkez',
@@ -688,15 +691,30 @@ function slot(ek) {
     session: 'SABAH',
     booked: 1,
     updatedAt: 1,
+    lastRequestId: 'seed',
     ...ek,
   };
 }
 
-async function slotSeed(veri) {
+async function slotSeed(veri, id = 's1') {
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
-    await setDoc(doc(ctx.firestore(), 'slotAvailability/s1'), veri);
+    await setDoc(doc(ctx.firestore(), `slotAvailability/${id}`), veri);
   });
 }
+
+// Sayaca bağlı (slotId = s1) talep tohumlar.
+async function bagliTalepSeed(id, ek, slotIdYok) {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const veri = talep(id, { slotId: 's1', status: 'PLANNED', ...ek });
+    if (slotIdYok) delete veri.slotId;
+    await setDoc(doc(ctx.firestore(), `transportRequests/${id}`), veri);
+  });
+}
+
+const IPTAL = {
+  status: 'CANCELLED', cancelledBy: 'P', cancelReason: 'Plan degisti',
+  cancelledAt: 2, updatedAt: 2,
+};
 
 test('Hasta doluluk sayacini okur', async () => {
   await slotSeed(slot());
@@ -706,54 +724,187 @@ test('Oturumsuz doluluk sayaci okunamaz', async () => {
   await slotSeed(slot());
   await assertFails(getDoc(doc(anonim(), 'slotAvailability/s1')));
 });
-test('Hasta yeni doluluk sayaci olusturur', async () => {
-  await assertSucceeds(setDoc(doc(hasta(), 'slotAvailability/s1'), slot()));
+
+// +1: talep oluşturma
+test('Hasta talep olustururken yeni sayac olusturur', async () => {
+  const db = hasta();
+  const b = writeBatch(db);
+  b.set(doc(db, 'slotAvailability/s1'), slot({ lastRequestId: 'y1' }));
+  b.set(doc(db, 'transportRequests/y1'), talep('y1', { slotId: 's1' }));
+  await assertSucceeds(b.commit());
 });
-test('Hasta sifir dolulukla sayac olusturamaz', async () => {
-  await assertFails(setDoc(doc(hasta(), 'slotAvailability/s1'), slot({ booked: 0 })));
-});
-test('Hasta sayaci bir artirir', async () => {
+test('Hasta talep olustururken sayaci bir artirir', async () => {
   await slotSeed(slot());
-  await assertSucceeds(updateDoc(doc(hasta(), 'slotAvailability/s1'), {
-    booked: 2, updatedAt: 2,
-  }));
+  const db = hasta();
+  const b = writeBatch(db);
+  b.update(doc(db, 'slotAvailability/s1'), { booked: 2, updatedAt: 2, lastRequestId: 'y1' });
+  b.set(doc(db, 'transportRequests/y1'), talep('y1', { slotId: 's1' }));
+  await assertSucceeds(b.commit());
 });
-test('Hasta sayaci iki artiramaz', async () => {
+test('Hasta talep olusturmadan sayaci artiramaz', async () => {
   await slotSeed(slot());
   await assertFails(updateDoc(doc(hasta(), 'slotAvailability/s1'), {
-    booked: 3, updatedAt: 2,
+    booked: 2, updatedAt: 2, lastRequestId: 'yok',
   }));
 });
-test('Hasta sayaci bir azaltir', async () => {
-  await slotSeed(slot({ booked: 2 }));
-  await assertSucceeds(updateDoc(doc(hasta(), 'slotAvailability/s1'), {
-    booked: 1, updatedAt: 2,
+test('Hasta var olan talebi gostererek sayaci artiramaz', async () => {
+  await slotSeed(slot());
+  await assertFails(updateDoc(doc(hasta(), 'slotAvailability/s1'), {
+    booked: 2, updatedAt: 2, lastRequestId: 'r1',
   }));
+});
+test('Hasta kendi mevcut talebini gostererek sayaci tekrar artiramaz', async () => {
+  await slotSeed(slot());
+  await bagliTalepSeed('b1', {});
+  await assertFails(updateDoc(doc(hasta(), 'slotAvailability/s1'), {
+    booked: 2, updatedAt: 2, lastRequestId: 'b1',
+  }));
+});
+test('Hasta sayaci talep belgesi olmadan olusturamaz', async () => {
+  await assertFails(setDoc(doc(hasta(), 'slotAvailability/s1'), slot({ lastRequestId: 'y1' })));
+});
+test('Hasta baska merkezin sayacini kendi talebiyle artiramaz', async () => {
+  await slotSeed(slot({ centerName: 'Baska Merkez' }));
+  const db = hasta();
+  const b = writeBatch(db);
+  b.update(doc(db, 'slotAvailability/s1'), { booked: 2, updatedAt: 2, lastRequestId: 'y1' });
+  b.set(doc(db, 'transportRequests/y1'), talep('y1', { slotId: 's1' }));
+  await assertFails(b.commit());
+});
+test('Hasta baska seans diliminin sayacini artiramaz', async () => {
+  await slotSeed(slot({ session: 'AKSAM' }));
+  const db = hasta();
+  const b = writeBatch(db);
+  b.update(doc(db, 'slotAvailability/s1'), { booked: 2, updatedAt: 2, lastRequestId: 'y1' });
+  b.set(doc(db, 'transportRequests/y1'), talep('y1', { slotId: 's1' }));
+  await assertFails(b.commit());
+});
+test('Hasta slotId baglamayan talebe sayac artisi yazamaz', async () => {
+  await slotSeed(slot());
+  const db = hasta();
+  const b = writeBatch(db);
+  b.update(doc(db, 'slotAvailability/s1'), { booked: 2, updatedAt: 2, lastRequestId: 'y1' });
+  b.set(doc(db, 'transportRequests/y1'), talep('y1', { slotId: '' }));
+  await assertFails(b.commit());
+});
+test('Hasta iki kez ayni talep icin sayac artiramaz', async () => {
+  await slotSeed(slot());
+  const db = hasta();
+  const b = writeBatch(db);
+  b.update(doc(db, 'slotAvailability/s1'), { booked: 3, updatedAt: 2, lastRequestId: 'y1' });
+  b.set(doc(db, 'transportRequests/y1'), talep('y1', { slotId: 's1' }));
+  await assertFails(b.commit());
+});
+test('Talep slotId alani olmadan olusturulamaz', async () => {
+  const veri = talep('y2');
+  delete veri.slotId;
+  await assertFails(setDoc(doc(hasta(), 'transportRequests/y2'), veri));
+});
+
+// -1: iptal
+test('Hasta talebini iptal ederken sayaci bir azaltir', async () => {
+  await slotSeed(slot({ booked: 2 }));
+  await bagliTalepSeed('i1', {});
+  const db = hasta();
+  const b = writeBatch(db);
+  b.update(doc(db, 'slotAvailability/s1'), { booked: 1, updatedAt: 2, lastRequestId: 'i1' });
+  b.update(doc(db, 'transportRequests/i1'), IPTAL);
+  await assertSucceeds(b.commit());
+});
+test('Hasta iptal etmeden sayaci azaltamaz', async () => {
+  await slotSeed(slot({ booked: 2 }));
+  await bagliTalepSeed('i1', {});
+  await assertFails(updateDoc(doc(hasta(), 'slotAvailability/s1'), {
+    booked: 1, updatedAt: 2, lastRequestId: 'i1',
+  }));
+});
+test('Zaten iptal edilmis talep icin sayac ikinci kez azaltilamaz', async () => {
+  await slotSeed(slot({ booked: 2 }));
+  await bagliTalepSeed('i1', { status: 'CANCELLED' });
+  await assertFails(updateDoc(doc(hasta(), 'slotAvailability/s1'), {
+    booked: 1, updatedAt: 2, lastRequestId: 'i1',
+  }));
+});
+test('Sayaca bagli olmayan talebin iptaliyle sayac azaltilamaz', async () => {
+  await slotSeed(slot({ booked: 2 }));
+  await bagliTalepSeed('i1', { slotId: '' });
+  const db = hasta();
+  const b = writeBatch(db);
+  b.update(doc(db, 'slotAvailability/s1'), { booked: 1, updatedAt: 2, lastRequestId: 'i1' });
+  b.update(doc(db, 'transportRequests/i1'), IPTAL);
+  await assertFails(b.commit());
+});
+test('Hasta baska hastanin talebi uzerinden sayaci azaltamaz', async () => {
+  await slotSeed(slot({ booked: 2 }));
+  await bagliTalepSeed('i1', { patientId: 'U', createdBy: 'U' });
+  await assertFails(updateDoc(doc(hasta(), 'slotAvailability/s1'), {
+    booked: 1, updatedAt: 2, lastRequestId: 'i1',
+  }));
+});
+test('Eski (slotId alani olmayan) talep iptalinde sayac azalir', async () => {
+  await slotSeed(slot({ booked: 2 }));
+  await bagliTalepSeed('i1', {}, true);
+  const db = hasta();
+  const b = writeBatch(db);
+  b.update(doc(db, 'slotAvailability/s1'), { booked: 1, updatedAt: 2, lastRequestId: 'i1' });
+  b.update(doc(db, 'transportRequests/i1'), IPTAL);
+  await assertSucceeds(b.commit());
+});
+test('Koordinator talep iptalinde sayaci bir azaltir', async () => {
+  await slotSeed(slot({ booked: 2 }));
+  await bagliTalepSeed('i1', {});
+  const db = koordinator();
+  const b = writeBatch(db);
+  b.update(doc(db, 'slotAvailability/s1'), { booked: 1, updatedAt: 2, lastRequestId: 'i1' });
+  b.update(doc(db, 'transportRequests/i1'), {
+    status: 'CANCELLED', cancelledBy: 'C', cancelReason: 'Iptal', cancelledAt: 2, updatedAt: 2,
+  });
+  await assertSucceeds(b.commit());
 });
 test('Hasta sayaci sifirin altina indiremez', async () => {
   await slotSeed(slot({ booked: 0 }));
-  await assertFails(updateDoc(doc(hasta(), 'slotAvailability/s1'), {
-    booked: -1, updatedAt: 2,
-  }));
-});
-test('Hasta sayacta baska alan degistiremez', async () => {
-  await slotSeed(slot());
-  await assertFails(updateDoc(doc(hasta(), 'slotAvailability/s1'), {
-    booked: 2, centerName: 'Baska Merkez', updatedAt: 2,
-  }));
-});
-test('Hasta doluluk sayacini silemez', async () => {
-  await slotSeed(slot());
-  await assertFails(deleteDoc(doc(hasta(), 'slotAvailability/s1')));
-});
-test('Oturumsuz doluluk sayaci olusturamaz', async () => {
-  await assertFails(setDoc(doc(anonim(), 'slotAvailability/s1'), slot()));
+  await bagliTalepSeed('i1', {});
+  const db = hasta();
+  const b = writeBatch(db);
+  b.update(doc(db, 'slotAvailability/s1'), { booked: -1, updatedAt: 2, lastRequestId: 'i1' });
+  b.update(doc(db, 'transportRequests/i1'), IPTAL);
+  await assertFails(b.commit());
 });
 
+// Taşıma (koordinatör gecikme onayı)
+test('Koordinator talebi baska dilime tasirken sayaclari gunceller', async () => {
+  await slotSeed(slot({ booked: 2 }));
+  await slotSeed(slot({ booked: 1, session: 'OGLEDEN_SONRA' }), 's2');
+  await bagliTalepSeed('t1', {});
+  const db = koordinator();
+  const b = writeBatch(db);
+  b.update(doc(db, 'slotAvailability/s1'), { booked: 1, updatedAt: 2, lastRequestId: 't1' });
+  b.update(doc(db, 'slotAvailability/s2'), { booked: 2, updatedAt: 2, lastRequestId: 't1' });
+  b.update(doc(db, 'transportRequests/t1'), {
+    sessionTime: '13:00', slotId: 's2', updatedAt: 2,
+  });
+  await assertSucceeds(b.commit());
+});
+test('Koordinator talep tasimadan sayaci oynatamaz', async () => {
+  await slotSeed(slot({ booked: 2 }));
+  await bagliTalepSeed('t1', {});
+  await assertFails(updateDoc(doc(koordinator(), 'slotAvailability/s1'), {
+    booked: 1, updatedAt: 2, lastRequestId: 't1',
+  }));
+});
+test('Koordinator talep tasimadan sayaci artiramaz', async () => {
+  await slotSeed(slot({ booked: 1 }));
+  await bagliTalepSeed('t1', {});
+  await assertFails(updateDoc(doc(koordinator(), 'slotAvailability/s1'), {
+    booked: 2, updatedAt: 2, lastRequestId: 't1',
+  }));
+});
+
+// Diğer roller ve alanlar
 test('Gorevli doluluk sayacini artiramaz', async () => {
   await slotSeed(slot());
   await assertFails(updateDoc(doc(gorevli(), 'slotAvailability/s1'), {
-    booked: 2, updatedAt: 2,
+    booked: 2, updatedAt: 2, lastRequestId: 'r1',
   }));
 });
 test('Yakin doluluk sayaci olusturamaz', async () => {
@@ -763,15 +914,26 @@ test('Profili olmayan hesap doluluk sayacini artiramaz', async () => {
   await slotSeed(slot());
   const profilsiz = testEnv.authenticatedContext('X').firestore();
   await assertFails(updateDoc(doc(profilsiz, 'slotAvailability/s1'), {
-    booked: 2, updatedAt: 2,
+    booked: 2, updatedAt: 2, lastRequestId: 'r1',
   }));
   await assertFails(setDoc(doc(profilsiz, 'slotAvailability/s2'), slot()));
 });
-test('Koordinator doluluk sayacini bir azaltir', async () => {
-  await slotSeed(slot({ booked: 2 }));
-  await assertSucceeds(updateDoc(doc(koordinator(), 'slotAvailability/s1'), {
-    booked: 1, updatedAt: 2,
-  }));
+test('Hasta sayacta baska alan degistiremez', async () => {
+  await slotSeed(slot());
+  const db = hasta();
+  const b = writeBatch(db);
+  b.update(doc(db, 'slotAvailability/s1'), {
+    booked: 2, centerName: 'Baska Merkez', updatedAt: 2, lastRequestId: 'y1',
+  });
+  b.set(doc(db, 'transportRequests/y1'), talep('y1', { slotId: 's1' }));
+  await assertFails(b.commit());
+});
+test('Hasta doluluk sayacini silemez', async () => {
+  await slotSeed(slot());
+  await assertFails(deleteDoc(doc(hasta(), 'slotAvailability/s1')));
+});
+test('Oturumsuz doluluk sayaci olusturamaz', async () => {
+  await assertFails(setDoc(doc(anonim(), 'slotAvailability/s1'), slot()));
 });
 
 // --- Hasta yakını davet ve bağlantı ---

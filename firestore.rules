@@ -144,30 +144,104 @@ service cloud.firestore {
     }
 
     // Seans doluluk sayaçları: yalnızca toplam sayı tutulur, kişisel veri yoktur.
-    // Hasta rezervasyonda +1, iptalde -1 yapar; sayaç belgesi yoksa 1 ile oluşturur.
-    // Amaç eşzamanlı iki talebin son kontenjanı aşmasını önlemek; iş kuralı istemcide.
-    // Yazma yalnızca hasta (talep oluşturma/iptal) ve koordinatör (yeniden planlama/iptal)
-    // rolüne açıktır; profili olmayan, görevli veya yakın hesaplar sayacı değiştiremez.
+    // Sayaç yalnızca aynı işlemdeki gerçek bir talep değişikliğiyle oynatılabilir:
+    //   +1: yeni talep oluşturulurken (hasta) ya da talep bu dilime taşınırken (koordinatör)
+    //   -1: talep iptal edilirken (sahibi hasta/koordinatör) ya da talep başka dilime taşınırken
+    // Her yazma `lastRequestId` ile ilgili talebi gösterir; talep belgesindeki `slotId` alanı
+    // da hangi sayaca bağlı olduğunu söyler. Böylece sayaç tek başına ±1 oynatılamaz.
+    // Not: kapasite üst sınırı istemcide denetlenir; kurallar sayacın tutarlılığını korur.
     match /slotAvailability/{slotId} {
+
+      // Saat dilimi adı (istemcideki Kapasite.seansDilimi ile aynı sınırlar). Saat HH:mm olmalı.
+      function oturumAdi(saat) {
+        return saat < '12:00' ? 'SABAH' : (saat < '17:00' ? 'OGLEDEN_SONRA' : 'AKSAM');
+      }
+
+      function talepYolu(id) {
+        return /databases/$(database)/documents/transportRequests/$(id);
+      }
+
+      // Talep verisi bu sayaç belgesinin merkez/tarih/seans bilgisiyle örtüşüyor mu?
+      function slotaUyar(t) {
+        return t.sessionTime.matches('^[0-9]{2}:[0-9]{2}$')
+          && t.centerName == request.resource.data.centerName
+          && t.sessionDate == request.resource.data.date
+          && oturumAdi(t.sessionTime) == request.resource.data.session;
+      }
+
+      // Talep belgesi bu sayaca bağlı mı? (Eski talepler slotId alanı olmadığı için serbest.)
+      function talepBuSlotaBagli(t) {
+        return !('slotId' in t) || t.slotId == slotId;
+      }
+
+      function lastRequestId() {
+        return request.resource.data.lastRequestId;
+      }
+
+      // +1 (hasta): talep bu işlemde yeni oluşuyor ve bu sayaca bağlanıyor.
+      function yeniTalepArtisi() {
+        return hastaMi()
+          && lastRequestId() is string
+          && !exists(talepYolu(lastRequestId()))
+          && existsAfter(talepYolu(lastRequestId()))
+          && getAfter(talepYolu(lastRequestId())).data.patientId == request.auth.uid
+          && getAfter(talepYolu(lastRequestId())).data.slotId == slotId
+          && slotaUyar(getAfter(talepYolu(lastRequestId())).data);
+      }
+
+      // +1 (koordinatör): var olan talep bu dilime taşınıyor.
+      function tasinanTalepArtisi() {
+        return koordinatorMu()
+          && lastRequestId() is string
+          && exists(talepYolu(lastRequestId()))
+          && !slotaUyar(get(talepYolu(lastRequestId())).data)
+          && getAfter(talepYolu(lastRequestId())).data.slotId == slotId
+          && slotaUyar(getAfter(talepYolu(lastRequestId())).data);
+      }
+
+      // -1: talep bu sayaçtayken iptal ediliyor (sahibi hasta ya da koordinatör).
+      function iptalAzalisi() {
+        return lastRequestId() is string
+          && exists(talepYolu(lastRequestId()))
+          && get(talepYolu(lastRequestId())).data.status != 'CANCELLED'
+          && getAfter(talepYolu(lastRequestId())).data.status == 'CANCELLED'
+          && talepBuSlotaBagli(get(talepYolu(lastRequestId())).data)
+          && slotaUyar(get(talepYolu(lastRequestId())).data)
+          && (koordinatorMu()
+              || get(talepYolu(lastRequestId())).data.patientId == request.auth.uid);
+      }
+
+      // -1 (koordinatör): talep bu dilimden başka dilime taşınıyor.
+      function tasinanTalepAzalisi() {
+        return koordinatorMu()
+          && lastRequestId() is string
+          && exists(talepYolu(lastRequestId()))
+          && talepBuSlotaBagli(get(talepYolu(lastRequestId())).data)
+          && slotaUyar(get(talepYolu(lastRequestId())).data)
+          && !slotaUyar(getAfter(talepYolu(lastRequestId())).data);
+      }
+
       allow read: if girisYapmis();
 
-      allow create: if (hastaMi() || koordinatorMu())
-        && request.resource.data.booked is int
+      allow create: if request.resource.data.booked is int
         && request.resource.data.booked == 1
-        && request.resource.data.booked <= 50
         && request.resource.data.keys().hasOnly([
-             'centerName', 'date', 'session', 'booked', 'updatedAt'
-           ]);
+             'centerName', 'date', 'session', 'booked', 'updatedAt', 'lastRequestId'
+           ])
+        && (yeniTalepArtisi() || tasinanTalepArtisi());
 
-      allow update: if (hastaMi() || koordinatorMu())
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-             'booked', 'updatedAt'
+      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'booked', 'updatedAt', 'lastRequestId'
            ])
         && request.resource.data.booked is int
         && request.resource.data.booked >= 0
         && request.resource.data.booked <= 50
-        && ((request.resource.data.booked == resource.data.booked + 1)
-            || (request.resource.data.booked == resource.data.booked - 1));
+        && (
+          (request.resource.data.booked == resource.data.booked + 1
+            && (yeniTalepArtisi() || tasinanTalepArtisi()))
+          || (request.resource.data.booked == resource.data.booked - 1
+            && (iptalAzalisi() || tasinanTalepAzalisi()))
+        );
 
       allow delete: if false;
     }
@@ -402,6 +476,7 @@ service cloud.firestore {
         && (!('personnelId' in request.resource.data) || request.resource.data.personnelId == '')
         && (!('personnelPhone' in request.resource.data) || request.resource.data.personnelPhone == '')
         && request.resource.data.priorityVerified == false
+        && request.resource.data.slotId is string
         && (!('priorityCategory' in request.resource.data)
             || request.resource.data.priorityCategory in [
                  'NONE', 'AGE_65_PLUS', 'DISABILITY', 'MARTYR_VETERAN', 'SERIOUS_HEALTH'
