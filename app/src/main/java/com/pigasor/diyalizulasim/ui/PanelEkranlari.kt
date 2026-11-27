@@ -99,7 +99,7 @@ fun YakinEkrani(onCikis: () -> Unit) {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(
-                            text = "Hastanızın panelinden oluşturduğu 6 haneli davet kodunu girin.",
+                            text = "Hastanızın panelinden oluşturduğu 12 karakterlik davet kodunu girin.",
                             style = MaterialTheme.typography.bodyMedium
                         )
                         Spacer(Modifier.height(8.dp))
@@ -112,7 +112,7 @@ fun YakinEkrani(onCikis: () -> Unit) {
                                     .take(DavetKodu.UZUNLUK)
                             },
                             label = { Text("Davet kodu") },
-                            placeholder = { Text("Örn. A7K2M9") },
+                            placeholder = { Text("Örn. A7K2M9PQ4XRT") },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(
                                 capitalization = KeyboardCapitalization.Characters,

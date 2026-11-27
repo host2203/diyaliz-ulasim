@@ -128,9 +128,12 @@ Ek kurallar:
   yalnızca koordinatör yazar, tüm giriş yapanlar okur.
 - Hasta tarih/saat/merkez alanlarını sonradan değiştiremez; kapasite sayacını
   atlatmamak için değişiklik yalnızca iptal + yeni taleple yapılır.
-- Hasta yakını daveti `relativeInvites/{code}`: hastanın kendi ürettiği 6 haneli,
-  tek kullanımlık ve 7 günlük koddur. Kod yalnızca kimliği doğrulanmış
-  kullanıcılar tarafından bilinerek okunabilir; liste sorgusu kapalıdır.
+- Hasta yakını daveti `relativeInvites/{code}`: hastanın kendi ürettiği, SecureRandom ile
+  üretilmiş 12 karakterlik (≈2^60 ihtimal), tek kullanımlık ve 7 günlük koddur.
+  Kodu yalnızca hasta ve yakın rolündeki hesaplar bilinerek okuyabilir; liste
+  sorgusu kapalıdır.
+- `slotAvailability` sayaçları yalnızca hasta ve koordinatör rolleri tarafından
+  ±1 adımla değiştirilebilir; profili olmayan, görevli veya yakın hesaplar yazamaz.
 - `relativeLinks/{relativeUid}` yalnızca geçerli/aktif davetle ve ilgili yakın
   hesabı tarafından oluşturulur; sonradan değiştirilemez/silinemez.
 - Yakının `linkedPatientId` alanı yalnızca `relativeLinks` belgesindeki hastayla

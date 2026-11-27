@@ -102,7 +102,7 @@ class YakinViewModel(
         val kullanici = _durum.value.kullanici ?: return
         if (_durum.value.islemYukleniyor) return
         if (!DavetKodu.gecerliMi(kod)) {
-            _durum.update { it.copy(islemHatasi = "Davet kodu 6 karakter olmalı.") }
+            _durum.update { it.copy(islemHatasi = "Davet kodu 12 karakter olmalı.") }
             return
         }
         _durum.update { it.copy(islemYukleniyor = true, islemHatasi = null) }

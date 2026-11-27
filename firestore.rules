@@ -79,7 +79,10 @@ service cloud.firestore {
 
     // Hasta yakını davetleri: hasta kendi kodunu üretir, yakın kodu tüketir.
     match /relativeInvites/{code} {
-      allow get: if girisYapmis();
+      // Yalnızca hasta ve yakın hesapları kod sorgulayabilir; kod 12 karakterlik rastgele
+      // değerdir (32^12 ≈ 2^60), bu yüzden tahminle bulunamaz.
+      allow get: if kullaniciVarMi()
+        && kullaniciBelgesi().data.role in ['PATIENT', 'RELATIVE'];
       allow list: if false;
       allow create: if girisYapmis()
         && kullaniciBelgesi().data.role == 'PATIENT'
@@ -88,7 +91,7 @@ service cloud.firestore {
         && request.resource.data.usedBy == ''
         && request.resource.data.active == true
         && request.resource.data.expiresAt > request.resource.data.createdAt
-        && code.size() == 6;
+        && code.size() == 12;
       allow update: if girisYapmis()
         && kullaniciBelgesi().data.role == 'RELATIVE'
         && resource.data.usedBy == ''
@@ -143,10 +146,12 @@ service cloud.firestore {
     // Seans doluluk sayaçları: yalnızca toplam sayı tutulur, kişisel veri yoktur.
     // Hasta rezervasyonda +1, iptalde -1 yapar; sayaç belgesi yoksa 1 ile oluşturur.
     // Amaç eşzamanlı iki talebin son kontenjanı aşmasını önlemek; iş kuralı istemcide.
+    // Yazma yalnızca hasta (talep oluşturma/iptal) ve koordinatör (yeniden planlama/iptal)
+    // rolüne açıktır; profili olmayan, görevli veya yakın hesaplar sayacı değiştiremez.
     match /slotAvailability/{slotId} {
       allow read: if girisYapmis();
 
-      allow create: if girisYapmis()
+      allow create: if (hastaMi() || koordinatorMu())
         && request.resource.data.booked is int
         && request.resource.data.booked == 1
         && request.resource.data.booked <= 50
@@ -154,7 +159,7 @@ service cloud.firestore {
              'centerName', 'date', 'session', 'booked', 'updatedAt'
            ]);
 
-      allow update: if girisYapmis()
+      allow update: if (hastaMi() || koordinatorMu())
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
              'booked', 'updatedAt'
            ])
