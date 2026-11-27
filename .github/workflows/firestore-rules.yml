@@ -1,0 +1,45 @@
+name: Firestore kural testleri
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'firestore.rules'
+      - 'firestore-tests/**'
+      - '.github/workflows/firestore-rules.yml'
+  pull_request:
+    paths:
+      - 'firestore.rules'
+      - 'firestore-tests/**'
+      - '.github/workflows/firestore-rules.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  kural-testleri:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: firestore-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: firestore-tests/package-lock.json
+
+      # Firestore emülatörü Java gerektirir.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Bağımlılıkları kur
+        run: npm ci --no-audit --no-fund
+
+      - name: Kural testlerini emülatörde çalıştır
+        run: npm test
