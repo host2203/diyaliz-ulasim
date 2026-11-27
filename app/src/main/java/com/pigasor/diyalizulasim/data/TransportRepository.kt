@@ -498,7 +498,7 @@ class TransportRepository(
         }
         val temizKod = DavetKodu.normalize(kod)
         if (!DavetKodu.gecerliMi(temizKod)) {
-            return Result.failure(Exception("Davet kodu 6 karakter olmalı."))
+            return Result.failure(Exception("Davet kodu 12 karakter olmalı."))
         }
         val simdi = System.currentTimeMillis()
         val davetRef = firestore.collection("relativeInvites").document(temizKod)

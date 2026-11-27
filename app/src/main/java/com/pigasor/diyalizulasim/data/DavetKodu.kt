@@ -1,20 +1,22 @@
 package com.pigasor.diyalizulasim.data
 
 import java.util.Locale
-import kotlin.random.Random
+import java.security.SecureRandom
 
 // Hasta yakını davet kodlarının üretimi ve doğrulaması.
 object DavetKodu {
 
-    const val UZUNLUK = 6
+    const val UZUNLUK = 12
     private const val ALFABE = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     const val GECERLILIK_GUN = 7L
+    private val rastgele = SecureRandom()
 
-    // Karışabilecek harfleri (I, O, 0, 1) dışlayan 6 karakterli kod üretir.
+    // Karışabilecek harfleri (I, O, 0, 1) dışlayan 12 karakterli kod üretir.
+    // SecureRandom kullanılır; 32^12 ≈ 2^60 ihtimal olduğundan kod tahmin edilemez.
     fun uret(): String {
         return buildString(UZUNLUK) {
             repeat(UZUNLUK) {
-                append(ALFABE[Random.nextInt(ALFABE.length)])
+                append(ALFABE[rastgele.nextInt(ALFABE.length)])
             }
         }
     } // uret: telefonda okunması kolay, tahmin edilmesi zor kod üretir.

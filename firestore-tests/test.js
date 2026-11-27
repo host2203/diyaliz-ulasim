@@ -750,6 +750,30 @@ test('Oturumsuz doluluk sayaci olusturamaz', async () => {
   await assertFails(setDoc(doc(anonim(), 'slotAvailability/s1'), slot()));
 });
 
+test('Gorevli doluluk sayacini artiramaz', async () => {
+  await slotSeed(slot());
+  await assertFails(updateDoc(doc(gorevli(), 'slotAvailability/s1'), {
+    booked: 2, updatedAt: 2,
+  }));
+});
+test('Yakin doluluk sayaci olusturamaz', async () => {
+  await assertFails(setDoc(doc(yakin(), 'slotAvailability/s1'), slot()));
+});
+test('Profili olmayan hesap doluluk sayacini artiramaz', async () => {
+  await slotSeed(slot());
+  const profilsiz = testEnv.authenticatedContext('X').firestore();
+  await assertFails(updateDoc(doc(profilsiz, 'slotAvailability/s1'), {
+    booked: 2, updatedAt: 2,
+  }));
+  await assertFails(setDoc(doc(profilsiz, 'slotAvailability/s2'), slot()));
+});
+test('Koordinator doluluk sayacini bir azaltir', async () => {
+  await slotSeed(slot({ booked: 2 }));
+  await assertSucceeds(updateDoc(doc(koordinator(), 'slotAvailability/s1'), {
+    booked: 1, updatedAt: 2,
+  }));
+});
+
 // --- Hasta yakını davet ve bağlantı ---
 function davet(ek) {
   return {
@@ -768,48 +792,48 @@ function baglanti(ek) {
   return {
     patientId: 'P',
     patientName: 'Test Hasta',
-    inviteCode: 'ABC123',
+    inviteCode: 'ABCD23EFGH45',
     createdAt: 1,
     ...ek,
   };
 }
 
 test('Hasta davet kodu olusturur', async () => {
-  await assertSucceeds(setDoc(doc(hasta(), 'relativeInvites/ABC123'), davet()));
+  await assertSucceeds(setDoc(doc(hasta(), 'relativeInvites/ABCD23EFGH45'), davet()));
 });
 test('Hasta kullanilmis davet olusturamaz', async () => {
-  await assertFails(setDoc(doc(hasta(), 'relativeInvites/ABC123'), davet({
+  await assertFails(setDoc(doc(hasta(), 'relativeInvites/ABCD23EFGH45'), davet({
     usedBy: 'R', usedAt: 2, active: false,
   })));
 });
 test('Yakin davet kodunu okur', async () => {
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
-    await setDoc(doc(ctx.firestore(), 'relativeInvites/ABC123'), davet());
+    await setDoc(doc(ctx.firestore(), 'relativeInvites/ABCD23EFGH45'), davet());
   });
-  await assertSucceeds(getDoc(doc(yakin(), 'relativeInvites/ABC123')));
+  await assertSucceeds(getDoc(doc(yakin(), 'relativeInvites/ABCD23EFGH45')));
 });
 test('Yakin davet listesini okuyamaz', async () => {
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
-    await setDoc(doc(ctx.firestore(), 'relativeInvites/ABC123'), davet());
+    await setDoc(doc(ctx.firestore(), 'relativeInvites/ABCD23EFGH45'), davet());
   });
   await assertFails(getDocs(collection(yakin(), 'relativeInvites')));
 });
 test('Yakin gecerli davetle baglanti olusturur', async () => {
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
-    await setDoc(doc(ctx.firestore(), 'relativeInvites/ABC123'), davet());
+    await setDoc(doc(ctx.firestore(), 'relativeInvites/ABCD23EFGH45'), davet());
   });
   await assertSucceeds(setDoc(doc(yakin(), 'relativeLinks/R'), baglanti()));
   await assertSucceeds(getDoc(doc(yakin(), 'relativeLinks/R')));
 });
 test('Yakin gecersiz kodla baglanti olusturamaz', async () => {
   await assertFails(setDoc(doc(yakin(), 'relativeLinks/R'), baglanti({
-    inviteCode: 'ZZZZZZ',
+    inviteCode: 'ZZZZZZZZZZZZ',
   })));
 });
 test('Yakin baska hastaya baglanti yazamaz', async () => {
   const db = yakin2();
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
-    await setDoc(doc(ctx.firestore(), 'relativeInvites/ABC123'), davet());
+    await setDoc(doc(ctx.firestore(), 'relativeInvites/ABCD23EFGH45'), davet());
   });
   await assertSucceeds(setDoc(doc(db, 'relativeLinks/R2'), baglanti()));
   await assertFails(setDoc(doc(db, 'users/R2'), {
@@ -819,21 +843,37 @@ test('Yakin baska hastaya baglanti yazamaz', async () => {
 test('Yakin profilini baglantiyla gunceller', async () => {
   const db = yakin2();
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
-    await setDoc(doc(ctx.firestore(), 'relativeInvites/ABC123'), davet());
+    await setDoc(doc(ctx.firestore(), 'relativeInvites/ABCD23EFGH45'), davet());
   });
   await assertSucceeds(setDoc(doc(db, 'relativeLinks/R2'), baglanti()));
   await assertSucceeds(setDoc(doc(db, 'users/R2'), {
     linkedPatientId: 'P', updatedAt: 2,
   }, { merge: true }));
 });
+test('Hasta 6 karakterlik zayif davet kodu olusturamaz', async () => {
+  await assertFails(setDoc(doc(hasta(), 'relativeInvites/ABC123'), davet()));
+});
+test('Gorevli davet kodunu sorgulayamaz', async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), 'relativeInvites/ABCD23EFGH45'), davet());
+  });
+  await assertFails(getDoc(doc(gorevli(), 'relativeInvites/ABCD23EFGH45')));
+});
+test('Profili olmayan hesap davet kodunu sorgulayamaz', async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), 'relativeInvites/ABCD23EFGH45'), davet());
+  });
+  const profilsiz = testEnv.authenticatedContext('X').firestore();
+  await assertFails(getDoc(doc(profilsiz, 'relativeInvites/ABCD23EFGH45')));
+});
 test('Yakin davet kodu olusturamaz', async () => {
-  await assertFails(setDoc(doc(yakin(), 'relativeInvites/XYZABC'), davet()));
+  await assertFails(setDoc(doc(yakin(), 'relativeInvites/XYZABCXYZABC'), davet()));
 });
 test('Yakin daveti kullanildi olarak isaretler', async () => {
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
-    await setDoc(doc(ctx.firestore(), 'relativeInvites/ABC123'), davet());
+    await setDoc(doc(ctx.firestore(), 'relativeInvites/ABCD23EFGH45'), davet());
   });
-  await assertSucceeds(updateDoc(doc(yakin(), 'relativeInvites/ABC123'), {
+  await assertSucceeds(updateDoc(doc(yakin(), 'relativeInvites/ABCD23EFGH45'), {
     usedBy: 'R', usedAt: 2, active: false,
   }));
 });

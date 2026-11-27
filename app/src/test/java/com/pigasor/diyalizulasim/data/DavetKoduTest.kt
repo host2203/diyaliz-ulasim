@@ -9,7 +9,7 @@ import org.junit.Test
 class DavetKoduTest {
 
     @Test
-    fun uretilenKodAltıKarakterVeGecerli() {
+    fun uretilenKodOnIkiKarakterVeGecerli() {
         repeat(50) {
             val kod = DavetKodu.uret()
             assertEquals(DavetKodu.UZUNLUK, kod.length)
@@ -19,16 +19,16 @@ class DavetKoduTest {
 
     @Test
     fun normalizeBoslukVeKucukHarfiDuzeltir() {
-        assertEquals("AB7K2M", DavetKodu.normalize(" ab7k2m "))
+        assertEquals("AB7K2M9PQ4XR", DavetKodu.normalize(" ab7k2m9pq4xr "))
     }
 
     @Test
     fun karisikKarakterlerVeYanlisUzunlukReddedilir() {
-        assertFalse(DavetKodu.gecerliMi("AB7K2"))
-        assertFalse(DavetKodu.gecerliMi("AB7K2M9"))
-        assertFalse(DavetKodu.gecerliMi("AB0K2M"))
-        assertFalse(DavetKodu.gecerliMi("ABIK2M"))
-        assertTrue(DavetKodu.gecerliMi("AB7K2M"))
+        assertFalse(DavetKodu.gecerliMi("AB7K2M9PQ4X"))
+        assertFalse(DavetKodu.gecerliMi("AB7K2M9PQ4XRT"))
+        assertFalse(DavetKodu.gecerliMi("AB0K2M9PQ4XR"))
+        assertFalse(DavetKodu.gecerliMi("ABIK2M9PQ4XR"))
+        assertTrue(DavetKodu.gecerliMi("AB7K2M9PQ4XR"))
     }
 
     @Test

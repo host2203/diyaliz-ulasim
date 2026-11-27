@@ -252,7 +252,7 @@ hemen sonra; araç CRUD'u takvime göre sona bırakılabilir.
 ## 14. Varsayılan kararlar
 
 - Rol, kayıt sırasında seçilir (prototip).
-- Yakın bağlantısı: hasta 6 karakterlik davet kodu üretir; yakın bu kodu girer
+- Yakın bağlantısı: hasta 12 karakterlik davet kodu üretir; yakın bu kodu girer
   ve hasta bağlantıyı iptal edebilir.
 - Bildirimler MVP'de yerel; FCM sonraki faz.
 - Harita adres seçici çekirdek akıştan hemen sonra (4. faz).

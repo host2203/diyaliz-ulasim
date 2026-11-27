@@ -101,6 +101,10 @@ olmalıdır.
 
 ### 5. Derleme ve çalıştırma
 
+JDK 17 veya üstü gerekir (Android Studio'nun gömülü JDK'sı yeterlidir).
+`gradle.properties` içinde makineye özel JDK yolu tutulmaz; gerekirse kendi
+`~/.gradle/gradle.properties` dosyanıza `org.gradle.java.home=...` ekleyin.
+
 ```powershell
 .\gradlew.bat assembleDebug
 ```
@@ -176,7 +180,7 @@ güncelleyen kullanıcıyla kaydedilir.
 - **Uygulama içi + yerel bildirimler:** Talep, atama, hazırlık, durum, iptal,
   gecikme ve öncelik olaylarında ilgili role bildirim; okunmamış sayacı ve
   cihaz bildirimi. Gizli gecikme gerekçesi bildirim metnine yazılmaz.
-- **Hasta yakını daveti:** Hasta 6 haneli tek kullanımlık kod üretir; yakın
+- **Hasta yakını daveti:** Hasta 12 karakterlik tek kullanımlık kod üretir; yakın
   kodla bağlanır ve yalnızca bağlı hastanın taleplerini/geçmişini okur.
 - **Durum geçmişi:** Her talebin tür, değer, not, kullanıcı ve zaman içeren
   denetim izi; hasta/koordinatör/görevli/yakın görünümünde.
